@@ -27,6 +27,21 @@ from cdfistress import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
+
+def _api_reference() -> str:
+    """Just the '## API Reference' section, up to the next top-level heading.
+
+    Scoped deliberately. Searching the whole README let the auto-generated
+    quickstart code fence satisfy the documentation gate: 10 of the exported
+    names could be deleted from the API Reference with the suite green, because
+    they still appeared in the generated snippet.
+    """
+    after = README.split("## API Reference", 1)[1]
+    return after.split("\n## ", 1)[0]
+
+
+API_REFERENCE = _api_reference()
+
 # Public names that carry a `.member` in the README API reference.
 _DOC_CLASSES = [
     cdfistress.MonteCarloEngine,
@@ -239,24 +254,70 @@ class TestBasisPointRendering:
 class TestReadmeDocumentsTheRealApi:
     """The README API reference must match __all__ in both directions."""
 
-    def test_every_exported_name_appears_in_the_readme(self):
+    def test_the_api_reference_section_was_actually_found(self):
+        """Guard: if the heading is renamed, every gate below covers nothing."""
+        assert API_REFERENCE.strip(), "could not isolate the '## API Reference' section"
+        assert len(API_REFERENCE) < len(README), "API Reference scoping did not narrow anything"
+
+    def test_every_exported_name_appears_in_the_api_reference(self):
+        """Scoped to the API Reference, not the whole README.
+
+        Against the whole README this passed while 10 of the exported names were
+        absent from the API Reference, because the generated quickstart fence
+        mentions them.
+        """
         missing = [
             name
             for name in cdfistress.__all__
-            if not re.search(rf"\b{re.escape(name)}\b", README)
+            if not re.search(rf"\b{re.escape(name)}\b", API_REFERENCE)
         ]
-        assert not missing, f"exported but undocumented in README: {missing}"
+        assert not missing, (
+            f"exported but absent from the README API Reference: {missing}"
+        )
+
+    def test_every_public_method_of_a_documented_class_is_in_the_api_reference(self):
+        """Documented *methods* were not covered at all.
+
+        `default_probabilities` could be deleted from the API Reference with the
+        suite green, which is how a renamed or removed method goes unnoticed --
+        and 0.2.0 renamed one.
+        """
+        missing = []
+        for cls in _DOC_CLASSES:
+            for name in sorted(vars(cls)):
+                if name.startswith("_"):
+                    continue
+                attr = inspect.getattr_static(cls, name)
+                if not (inspect.isfunction(attr) or isinstance(attr, property)):
+                    continue
+                if not re.search(rf"\.{re.escape(name)}\b", API_REFERENCE):
+                    missing.append(f"{cls.__name__}.{name}")
+        assert not missing, (
+            f"public members absent from the README API Reference: {missing}"
+        )
+
+    def test_the_method_gate_actually_covers_something(self):
+        """Guard against the loop above silently iterating over nothing."""
+        counted = sum(
+            1
+            for cls in _DOC_CLASSES
+            for name in vars(cls)
+            if not name.startswith("_")
+            and (
+                inspect.isfunction(inspect.getattr_static(cls, name))
+                or isinstance(inspect.getattr_static(cls, name), property)
+            )
+        )
+        assert counted >= 4, f"only {counted} public members found across {_DOC_CLASSES}"
 
     def test_every_function_call_in_the_api_reference_exists(self):
-        block = README.split("## API Reference", 1)[1]
-        names = set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)\(", block, re.M))
+        names = set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)\(", API_REFERENCE, re.M))
         assert names, "could not parse any names out of the API Reference block"
         unknown = sorted(n for n in names if not hasattr(cdfistress, n))
         assert not unknown, f"README documents names the package does not export: {unknown}"
 
     def test_every_documented_member_exists_on_some_public_class(self):
-        block = README.split("## API Reference", 1)[1]
-        members = set(re.findall(r"^\s+\.([a-z_][a-z0-9_]*)", block, re.M))
+        members = set(re.findall(r"^\s+\.([a-z_][a-z0-9_]*)", API_REFERENCE, re.M))
         assert members, "could not parse any .members out of the API Reference block"
         unknown = sorted(
             m for m in members if not any(hasattr(c, m) for c in _DOC_CLASSES)

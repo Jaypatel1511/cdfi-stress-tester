@@ -15,8 +15,33 @@ OUTPUT and emits both into README.md between generated-region markers, which mea
 the two provably came from the same execution -- the snippet in the README cannot
 drift away from the numbers printed underneath it.
 
-``tests/test_readme_artifact.py`` re-runs this renderer and byte-diffs the result
-against what is committed, so CI fails if README.md and the code ever disagree.
+``tests/test_committed_artifacts.py`` re-runs this renderer and byte-diffs the
+result against what is committed, so CI fails if README.md and the code ever
+disagree.
+
+NUMPY STREAM STABILITY -- READ BEFORE "FIXING" A RED GOLDEN GATE
+---------------------------------------------------------------
+The committed figures come from ``numpy.random.Generator``.  numpy's own
+docstring carries "No Compatibility Guarantee ... the bit stream may change",
+and the draws route through LAPACK ``gesdd``, whose singular-vector signs are
+not a standardised convention across builds.  The figures were verified
+identical on numpy 1.26.4 and 2.2.6, but that is evidence, not a guarantee.
+
+So: if this gate goes RED after a numpy (or BLAS/LAPACK) upgrade and NO source
+change, the stream moved.  That is not a bug in the engine and re-rendering
+alone is NOT the fix.  Re-render AND update every document that hand-copies
+these figures, in the same commit:
+
+  * README.md  -- the generated region (this script rewrites it) AND the
+    hand-written "Known limitations" item 3, which this script does NOT own.
+  * CHANGELOG.md -- the 0.2.0 "What the code actually printed" table and the
+    "Documented, not changed" correlation figures, which are hand-copied.
+
+Running this script WITHOUT ``--check`` rewrites README.md in place.  Doing that
+on its own is exactly how 0.1.0's defect returns: two documents in this repo
+reporting different numbers for the same run.  ``tests/test_documented_figures.py``
+gates the hand-copied duplicates against a fresh render so this cannot pass
+silently.
 
 USAGE
 -----

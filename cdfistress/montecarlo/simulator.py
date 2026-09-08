@@ -13,7 +13,11 @@ from cdfistress.data.schema import (
     StressResult,
     StressScenario,
 )
-from cdfistress.montecarlo.correlations import build_correlation_matrix, default_correlations
+from cdfistress.montecarlo.correlations import (
+    build_correlation_matrix,
+    default_correlations,
+    is_positive_semidefinite,
+)
 
 
 class MonteCarloEngine:
@@ -51,8 +55,58 @@ class MonteCarloEngine:
             raise ValueError("available_capital must be positive")
         self.loans = loans
         self.available_capital = available_capital
-        self._corr = correlation_matrix if correlation_matrix is not None else default_correlations()
+        self._corr = (
+            self._validated_correlation(correlation_matrix)
+            if correlation_matrix is not None
+            else default_correlations()
+        )
         self._loss_distribution: Optional[np.ndarray] = None
+
+    @staticmethod
+    def _validated_correlation(matrix: np.ndarray) -> np.ndarray:
+        """Return ``matrix`` as a validated 3x3 correlation matrix.
+
+        Through 0.2.0 this argument was accepted unchecked: a non-PSD matrix, or
+        one with a diagonal of 5 (not a correlation matrix at all), still produced
+        numbers.  ``is_positive_semidefinite`` was exported as public API and
+        never called by anything.  Both are fixed here.
+
+        This does not change the simulation math.  Every matrix that was valid
+        before is still accepted and still yields identical draws; only inputs
+        that were never correlation matrices now raise instead of silently
+        corrupting :meth:`apply_correlated_shocks`.
+
+        Raises
+        ------
+        ValueError
+            If the matrix is not a real, finite, symmetric 3x3 correlation matrix
+            with unit diagonal, off-diagonals in [-1, 1], and no negative
+            eigenvalues.
+        """
+        C = np.asarray(matrix, dtype=float)
+        if C.shape != (3, 3):
+            raise ValueError(
+                f"correlation_matrix must be 3x3 for [NOI, Rate, PropertyValue], got {C.shape}"
+            )
+        if not np.all(np.isfinite(C)):
+            raise ValueError("correlation_matrix contains NaN or infinite entries")
+        if not np.allclose(C, C.T, atol=1e-8):
+            raise ValueError("correlation_matrix must be symmetric")
+        if not np.allclose(np.diag(C), 1.0, atol=1e-8):
+            raise ValueError(
+                f"correlation_matrix must have a unit diagonal, got {np.diag(C).tolist()}. "
+                "A matrix with a non-unit diagonal is a covariance matrix, not a "
+                "correlation matrix; the engine scales by its own volatilities."
+            )
+        if np.any(np.abs(C) > 1.0 + 1e-8):
+            raise ValueError("correlation_matrix entries must lie in [-1, 1]")
+        if not is_positive_semidefinite(C):
+            raise ValueError(
+                "correlation_matrix is not positive semi-definite "
+                f"(eigenvalues {np.linalg.eigvalsh(C).tolist()}). Such a matrix does "
+                "not describe a realisable joint distribution."
+            )
+        return C
 
     def run_simulation(
         self,

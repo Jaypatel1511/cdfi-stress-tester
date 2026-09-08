@@ -3,7 +3,7 @@
 
 WHY THIS EXISTS
 ---------------
-The 0.1.0 demo notebook was committed having never been run. Six of its ten code
+The 0.1.0 demo notebook was committed having never been run. Six of its eleven code
 cells raised on import of the library's own API (``loan.commitment_amount``,
 ``scenario_comparison_table(...).to_string()``, ``tail_loss(..., percentile=99)``
 and others). Nothing caught it because nothing executed it.
@@ -13,6 +13,30 @@ running the notebook from the ``examples/`` directory, and stores the captured
 stdout as each cell's output. ``tests/test_committed_artifacts.py`` re-runs it in
 ``--check`` mode, so a notebook that no longer executes -- or whose committed
 outputs no longer match a fresh run -- fails CI.
+
+NUMPY STREAM STABILITY -- READ BEFORE "FIXING" A RED GOLDEN GATE
+---------------------------------------------------------------
+The committed figures come from ``numpy.random.Generator``.  numpy's own
+docstring carries "No Compatibility Guarantee ... the bit stream may change",
+and the draws route through LAPACK ``gesdd``, whose singular-vector signs are
+not a standardised convention across builds.  The figures were verified
+identical on numpy 1.26.4 and 2.2.6, but that is evidence, not a guarantee.
+
+So: if this gate goes RED after a numpy (or BLAS/LAPACK) upgrade and NO source
+change, the stream moved.  That is not a bug in the engine and re-rendering
+alone is NOT the fix.  Re-render AND update every document that hand-copies
+these figures, in the same commit:
+
+  * README.md  -- the generated region (this script rewrites it) AND the
+    hand-written "Known limitations" item 3, which this script does NOT own.
+  * CHANGELOG.md -- the 0.2.0 "What the code actually printed" table and the
+    "Documented, not changed" correlation figures, which are hand-copied.
+
+Running this script WITHOUT ``--check`` rewrites README.md in place.  Doing that
+on its own is exactly how 0.1.0's defect returns: two documents in this repo
+reporting different numbers for the same run.  ``tests/test_documented_figures.py``
+gates the hand-copied duplicates against a fresh render so this cannot pass
+silently.
 
 USAGE
 -----

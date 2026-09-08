@@ -26,10 +26,21 @@ def create_recession_scenario(
     simulation.  They exist so callers can build an arbitrarily-labelled
     moderate or mild scenario without a second constructor.
 
-    All shocks are applied to EVERY loan in the portfolio.  The engine has no
-    mechanism for shocking one segment of a portfolio and not another, so do
+    All shocks are applied to EVERY loan in the portfolio.  A scenario's
+    ``noi_shock``, ``rate_shock``, ``property_value_shock`` and
+    ``default_rate_multiplier`` are scalars with no per-segment override, so do
     not use ``name`` to imply that a scenario is confined to one sector or
-    geography -- it is not.  See CHANGELOG 0.2.0.
+    geography -- it is not.
+
+    What is missing here is CALIBRATION, not mechanism.  The engine already
+    resolves each loan's sector into a per-loan baseline default rate via
+    ``SECTOR_DEFAULT_RATES``, and that per-loan array is what the simulation
+    scales, so a single run already carries sector-differentiated PDs.  Adding
+    segment-targeted stress would scale that existing array; it does not need a
+    new engine.  What does not exist is any primary source for how much harder a
+    retail book should be shocked than a multifamily one, so the per-sector
+    factors would be invented -- which is why 0.2.0 removed the sector
+    constructor rather than inventing them.  See CHANGELOG 0.2.0.
     """
     return StressScenario(
         name=name,

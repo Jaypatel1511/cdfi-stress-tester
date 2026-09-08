@@ -79,12 +79,19 @@ and `create_sector_specific_scenario("commercial_real_estate")` returned objects
 identical in every field except `name`, and produced byte-identical expected loss
 ($5,179,239.38 at `seed=7`, `n_iterations=500`).
 
-It was removed rather than repaired. The engine applies a scenario's shocks to **every**
-loan in the portfolio; there is no mechanism to stress one sector and spare another.
-Giving the parameter invented per-sector shock magnitudes would have preserved the
-misleading name while still shocking the whole book, and there is no primary source of
-CDFI-sector-specific stress calibrations that would have made such numbers anything
-other than arbitrary.
+It was removed rather than repaired. A scenario's shocks and its default-rate multiplier
+are scalars, applied to **every** loan in the portfolio; giving the parameter invented
+per-sector shock magnitudes would have preserved the misleading name while still shocking
+the whole book.
+
+**The missing piece is calibration, not mechanism.** The engine already resolves each
+loan's sector into a per-loan baseline default rate via `SECTOR_DEFAULT_RATES`, and that
+per-loan array is what the simulation scales, so a single run already carries
+sector-differentiated PDs -- the 50-loan sample portfolio spans six sectors and five
+distinct PDs. Segment-targeted stress would scale that existing array rather than require
+a new engine. What does not exist is any primary source of CDFI-sector-specific stress
+calibrations, so the per-sector factors would have been arbitrary. Anyone picking this up
+should scope a calibration source, not an engine rewrite.
 
 **Migration:** use `create_recession_scenario(...)`, which now accepts `name` and
 `severity`. Do not label a scenario in a way that implies it is confined to a segment.
@@ -136,11 +143,118 @@ existing 0.1.0 behaviours that were previously undisclosed:
 Whether the rate and property draws *should* feed the loss calculation is a modelling
 decision rather than a bug fix, and is deliberately left for a future release.
 
+### Fixed - `pandas` was declared and never imported
+
+`pandas` was a declared runtime dependency in `pyproject.toml` and `setup.py`, and was
+named twice in the README (*"pure numpy/pandas"*, *"Requires: numpy, pandas"*). Nothing
+in the package, the scripts, the tests or the notebook ever imported it. It is removed
+from all four sites; the runtime dependency is now `numpy>=1.22` alone. The floor is a
+real one -- the engine uses `np.random.default_rng` -- and it is the only runtime
+dependency. `tests/test_packaging.py` now fails if any declared dependency is not
+imported somewhere in the package.
+
+### Fixed - the sdist shipped a test suite that could not run
+
+The 0.2.0 sdist omitted `tests/conftest.py`, `scripts/`, `examples/`, `.github/` and
+`CHANGELOG.md`. Unpacked and run from the tarball root it gave **`6 failed, 50 passed,
+1 skipped, 35 errors`**: every fixture in `conftest.py` was missing, and
+`test_committed_artifact_matches_fresh_render` parametrised over
+`SCRIPTS.glob("render_*.py")` with **zero** matches -- so the flagship gate did not fail,
+it silently *skipped*. A `MANIFEST.in` now ships everything the suite needs, and the same
+tarball gives **`93 passed`**.
+
+CI could not have caught this: it never built a distribution. A new `sdist` job builds
+both distributions, runs `twine check`, extracts the tarball and runs the shipped suite
+from the tarball root, and asserts the wheel carries a licence file and classifiers.
+
+### Fixed - no LICENSE file, and distributions with zero classifiers
+
+MIT was asserted in the README badge, the README footer, `pyproject.toml` and `setup.py`,
+and no `LICENSE` file existed in the repo, the wheel or the sdist. One is added
+(`Copyright (c) 2026 Jay Patel`, matching the README footer's existing assertion) and it
+now ships in both distributions.
+
+Separately, `pyproject.toml`'s `[project]` table silently overrode `setup.py`'s eight
+classifiers while declaring none of its own, so both 0.1.0 and 0.2.0 shipped wheel
+METADATA with no `Classifier:` line at all. The classifiers are now declared in
+`pyproject.toml`, covering every interpreter in the CI matrix.
+
+**Known deprecation, deliberately not actioned:** `license = { text = "MIT" }` and the
+`License :: OSI Approved :: MIT License` classifier are both deprecated by setuptools,
+with a stated removal date of **2027-Feb-18**. Migrating to the PEP 639 form
+(`license = "MIT"` plus `license-files`) would raise the build floor from
+`setuptools>=61.0` to `setuptools>=77.0.0`. That floor is compatible with Python 3.9, but
+raising it is a packaging decision rather than an audit fix, so it is left for a later
+release. Builds warn today; nothing breaks before 2027-Feb-18.
+
+### Fixed - invalid correlation matrices were silently accepted
+
+`MonteCarloEngine(correlation_matrix=...)` was unchecked. A non-positive-semidefinite
+matrix, and a matrix with a diagonal of 5 (not a correlation matrix at all), both produced
+numbers. `is_positive_semidefinite` was exported as public API and called by nothing.
+
+The constructor now validates shape, finiteness, symmetry, unit diagonal, entry range and
+positive semi-definiteness, and `is_positive_semidefinite` is what performs the last
+check. Because the matrix does not reach the loss path (see the limitation above), this
+did not corrupt loss distributions -- but `apply_correlated_shocks` is public and it did
+corrupt that. **This does not change the simulation math:** every matrix that was valid
+before is accepted and yields identical draws; only inputs that were never correlation
+matrices now raise.
+
+### Added - gates on figures that documents hand-copy
+
+The README quickstart has been a generated artifact since earlier in this release, but the
+figures **duplicated by hand** elsewhere were ungated. Falsifying this changelog's headline
+Expected Loss to `$1,111,111`, or every measured figure in README limitation 3, left the
+suite fully green.
+
+That gap is worst on the remediation path: `render_readme_block.py` without `--check`
+rewrites README **in place**, so the natural response to a red golden gate silently
+refreshes the generated region and leaves the hand-copied duplicates stale -- recreating
+the 0.1.0 defect of two documents reporting different numbers for the same run.
+`tests/test_documented_figures.py` re-derives all of them from a live run: this changelog's
+comparison table, both documents' copies of the 12-seed correlation experiment, and the
+`$5,179,239.38` figure quoted for the removed sector constructor.
+
+### Added - a written mitigation for numpy stream drift
+
+Nothing in the repo previously recorded that the golden figures depend on
+`numpy.random.Generator`, whose documentation carries *"No Compatibility Guarantee ... the
+bit stream may change"*, and which routes through LAPACK `gesdd`, whose singular-vector
+signs are not a standardised convention across builds.
+
+Both render scripts, the README and this changelog now state the response: **a red golden
+gate after a numpy or BLAS/LAPACK upgrade with no source change means the stream moved,
+and the fix is to re-render AND update every dependent document in the same commit** --
+never to re-render alone. The committed figures were verified byte-identical on numpy
+1.26.4 and 2.2.6, spanning the 1.x/2.x boundary. That is evidence, not a guarantee, which
+is why the declared floor is `numpy>=1.22` with no upper cap: the golden gates are the
+tripwire, and an unenforceable cap would only hide it.
+
+### Fixed - prose that named things that do not exist
+
+- `scripts/render_readme_block.py` claimed its gate lived in `tests/test_readme_artifact.py`,
+  a file that has never existed. The real gate is `tests/test_committed_artifacts.py`.
+- `scripts/render_notebook.py` said *"Six of its ten code cells raised."* The notebook has
+  **eleven** code cells; this changelog said 11 and was right.
+- `create_recession_scenario`'s load-bearing warning could be replaced by its own negation
+  with the suite green. It is gated now, as is the README limitation it mirrors.
+
 ### Test suite
 
-64 tests in 0.1.0 -> 93 in 0.2.0. The new gates cover committed-artifact staleness,
+64 tests in 0.1.0 -> 144 in 0.2.0. The gates cover committed-artifact staleness,
 notebook execution, the public API surface, version-site agreement, basis-point
-rendering, and the CI workflow's own action pinning and interpreter matrix.
+rendering, the CI workflow's own action pinning and interpreter matrix, and -- added
+while closing the hostile audit of this release -- declared-vs-imported dependencies,
+what the sdist actually ships, licence and classifier metadata, correlation-matrix
+validation, the exact values `default_probabilities` returns, and every measured figure
+this changelog and the README transcribe by hand.
+
+Two earlier gates were weaker than they read. `test_every_exported_name_appears_in_the_readme`
+searched the **whole** README, so the auto-generated quickstart fence satisfied it: 10 of
+the exported names could be deleted from the API Reference with the suite green, and
+documented *methods* were not covered at all. It is now scoped to the API Reference
+section and extended to the public methods of every documented class.
 
 ## [0.1.0] - 2026-05-11
 
