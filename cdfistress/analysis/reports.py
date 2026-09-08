@@ -18,7 +18,7 @@ def generate_stress_report(result: StressResult) -> str:
         "",
         "SCENARIO PARAMETERS",
         f"  NOI shock            : {result.scenario.noi_shock:+.1%}",
-        f"  Rate shock           : {result.scenario.rate_shock * 100:+.0f} bps",
+        f"  Rate shock           : {result.scenario.rate_shock * 10_000:+.0f} bps",
         f"  Property value shock : {result.scenario.property_value_shock:+.1%}",
         f"  Default mult         : {result.scenario.default_rate_multiplier:.1f}x baseline",
         "",

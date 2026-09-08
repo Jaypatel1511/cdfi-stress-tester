@@ -17,15 +17,27 @@ def create_recession_scenario(
     rate_shock: float = 0.0,
     property_value_shock: float = -0.40,
     default_rate_multiplier: float = 4.0,
+    name: str = "Custom Recession",
+    severity: str = "severe",
 ) -> StressScenario:
-    """Create a configurable recession scenario (defaults: 2008-style)."""
+    """Create a configurable recession scenario (defaults: 2008-style).
+
+    ``name`` and ``severity`` are labels only; they do not affect the
+    simulation.  They exist so callers can build an arbitrarily-labelled
+    moderate or mild scenario without a second constructor.
+
+    All shocks are applied to EVERY loan in the portfolio.  The engine has no
+    mechanism for shocking one segment of a portfolio and not another, so do
+    not use ``name`` to imply that a scenario is confined to one sector or
+    geography -- it is not.  See CHANGELOG 0.2.0.
+    """
     return StressScenario(
-        name="Custom Recession",
+        name=name,
         noi_shock=noi_shock,
         rate_shock=rate_shock,
         property_value_shock=property_value_shock,
         default_rate_multiplier=default_rate_multiplier,
-        severity="severe",
+        severity=severity,
     )
 
 
@@ -58,22 +70,6 @@ def create_rate_shock_scenario(
         property_value_shock=property_value_shock,
         default_rate_multiplier=multiplier,
         severity=severity,
-    )
-
-
-def create_sector_specific_scenario(
-    sector: str,
-    noi_shock: float = -0.30,
-    property_value_shock: float = -0.35,
-) -> StressScenario:
-    """Create a scenario targeting a specific asset sector."""
-    return StressScenario(
-        name=f"{sector.title()} Sector Stress",
-        noi_shock=noi_shock,
-        rate_shock=0.005,
-        property_value_shock=property_value_shock,
-        default_rate_multiplier=2.5,
-        severity="moderate",
     )
 
 

@@ -4,7 +4,6 @@ from cdfistress.scenarios.builder import (
     apply_shock_to_loan,
     create_rate_shock_scenario,
     create_recession_scenario,
-    create_sector_specific_scenario,
     from_standard,
 )
 
@@ -24,10 +23,13 @@ class TestScenarioBuilder:
         s = create_rate_shock_scenario(rate_shock=0.005)
         assert s.severity == "mild"
 
-    def test_sector_specific_scenario(self):
-        s = create_sector_specific_scenario("retail", noi_shock=-0.25)
+    def test_recession_scenario_accepts_label_overrides(self):
+        s = create_recession_scenario(
+            noi_shock=-0.25, name="Moderate Downturn", severity="moderate"
+        )
         assert s.noi_shock == pytest.approx(-0.25)
-        assert "Retail" in s.name
+        assert s.name == "Moderate Downturn"
+        assert s.severity == "moderate"
 
     def test_from_standard_2008(self):
         s = from_standard("2008_recession")

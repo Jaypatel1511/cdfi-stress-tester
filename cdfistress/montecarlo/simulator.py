@@ -94,6 +94,23 @@ class MonteCarloEngine:
             total_simulations=n_iterations,
         )
 
+    @property
+    def loss_distribution(self) -> np.ndarray:
+        """Portfolio losses from the most recent :meth:`run_simulation` call.
+
+        Returns a copy, so callers cannot mutate the engine's internal state.
+
+        Raises
+        ------
+        RuntimeError
+            If :meth:`run_simulation` has not been called yet.
+        """
+        if self._loss_distribution is None:
+            raise RuntimeError(
+                "No simulation has been run yet; call run_simulation() first."
+            )
+        return self._loss_distribution.copy()
+
     def _compute_loss_distribution(
         self,
         scenario: StressScenario,
@@ -179,16 +196,25 @@ class MonteCarloEngine:
         cov = D @ self._corr @ D
         return rng.multivariate_normal(means, cov, size=n_iterations)
 
-    def simulate_default_events(
+    def default_probabilities(
         self,
         scenario: StressScenario,
-        seed: Optional[int] = None,
     ) -> Dict[str, float]:
-        """Run a single deterministic default simulation at scenario means.
+        """Return each loan's scenario-adjusted annual default probability.
 
-        Returns per-loan default probabilities under the scenario.
+        This is a lookup, not a simulation.  Each loan's baseline sector default
+        rate (``SECTOR_DEFAULT_RATES``) is multiplied by the scenario's
+        ``default_rate_multiplier`` and clipped to [0, 1].  Nothing is drawn at
+        random, so there is no ``seed`` parameter.
+
+        These are NOT the probabilities used inside :meth:`run_simulation`.  The
+        simulation additionally scales each path's PD by ``1 + max(0, -noi_i)``
+        using that path's own drawn NOI shock, so realised simulation PDs are
+        greater than or equal to the values returned here.
+
+        Renamed in 0.2.0 from ``simulate_default_events``, which accepted a
+        ``seed`` argument that it then never used.
         """
-        rng = np.random.default_rng(seed)
         base_rates = np.array([
             SECTOR_DEFAULT_RATES.get(loan.sector, 0.035) * scenario.default_rate_multiplier
             for loan in self.loans

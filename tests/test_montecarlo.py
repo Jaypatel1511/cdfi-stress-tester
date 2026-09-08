@@ -80,12 +80,12 @@ class TestMonteCarloEngine:
         shocks = engine.apply_correlated_shocks(scenario_recession, n_iterations=100, seed=0)
         assert shocks.shape == (100, 3)
 
-    def test_simulate_default_events_returns_dict(self, engine, scenario_recession):
-        pds = engine.simulate_default_events(scenario_recession)
+    def test_default_probabilities_returns_dict(self, engine, scenario_recession):
+        pds = engine.default_probabilities(scenario_recession)
         assert len(pds) == len(engine.loans)
 
     def test_default_probabilities_bounded(self, engine, scenario_recession):
-        pds = engine.simulate_default_events(scenario_recession)
+        pds = engine.default_probabilities(scenario_recession)
         for pd in pds.values():
             assert 0 <= pd <= 1
 

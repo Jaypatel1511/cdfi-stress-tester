@@ -110,7 +110,7 @@ class StressScenario:
         return (
             f"Scenario: {self.name} [{self.severity}]\n"
             f"  NOI shock        : {self.noi_shock:+.1%}\n"
-            f"  Rate shock       : {self.rate_shock:+.0f} bps\n"
+            f"  Rate shock       : {self.rate_shock * 10_000:+.0f} bps\n"
             f"  Property shock   : {self.property_value_shock:+.1%}\n"
             f"  Default mult     : {self.default_rate_multiplier:.1f}x"
         )
