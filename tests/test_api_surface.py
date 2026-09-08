@@ -214,6 +214,127 @@ class TestDefaultProbabilities:
         )
 
 
+
+def _parameters_never_read(func):
+    """Names in ``func``'s signature that its body never reads.
+
+    Parsed from the AST with the docstring dropped. A substring search over the
+    source is not enough: a function that ignores a parameter almost always
+    still names it in its own docstring, which is exactly how 0.1.0's
+    ``simulate_default_events(seed=...)`` read as covered.
+    """
+    node = ast.parse(textwrap.dedent(inspect.getsource(func))).body[0]
+    body = node.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]  # drop the docstring
+    read = {
+        sub.id
+        for stmt in body
+        for sub in ast.walk(stmt)
+        if isinstance(sub, ast.Name)
+    }
+    return [
+        name
+        for name in inspect.signature(func).parameters
+        if name not in read and name not in ("self", "cls")
+    ]
+
+
+class TestNoPublicFunctionIgnoresAnArgument:
+    """The engine-method version of this gate existed; the module-level one did not.
+
+    ``test_no_public_engine_method_accepts_an_unused_seed`` covers
+    ``MonteCarloEngine`` methods only, and only the name ``seed``. Nothing
+    covered the exported module-level analysis functions -- so
+    ``tier1_under_stress`` could have ``value_at_risk(losses, confidence)``
+    replaced by ``value_at_risk(losses, 0.50)``, silently ignoring its
+    ``confidence`` argument, with the suite green. That is the identical shape
+    to the defect 0.2.0 renamed a method to fix, on a regulator-facing ratio.
+
+    Generalised from ``seed`` to every parameter: a declared argument that the
+    body never reads is dead weight the signature advertises as live, whatever
+    it is called.
+    """
+
+    def _public_functions(self):
+        return [
+            (name, obj)
+            for name in cdfistress.__all__
+            for obj in [getattr(cdfistress, name)]
+            if inspect.isfunction(obj)
+        ]
+
+    def test_the_sweep_actually_covers_something(self):
+        """Guard against the loop below silently iterating over nothing."""
+        functions = self._public_functions()
+        assert len(functions) >= 15, (
+            f"only {len(functions)} public module-level functions found in "
+            f"__all__: {[n for n, _ in functions]}"
+        )
+        # And at least one of them must take arguments, or the gate is vacuous.
+        with_args = [
+            name
+            for name, obj in functions
+            if inspect.signature(obj).parameters
+        ]
+        assert len(with_args) >= 15, f"only {len(with_args)} take parameters"
+
+    def test_no_exported_function_declares_a_parameter_it_never_reads(self):
+        offenders = {}
+        for name, obj in self._public_functions():
+            unread = _parameters_never_read(obj)
+            if unread:
+                offenders[name] = unread
+        assert not offenders, (
+            f"exported functions declare parameters they never read: {offenders}. "
+            "That was the 0.1.0 simulate_default_events(seed=...) defect: a "
+            "signature advertising a knob that does nothing."
+        )
+
+    def test_the_detector_flags_a_function_that_ignores_an_argument(self):
+        """Prove the detector is not inert.
+
+        Without this, a bug in the AST walk turns the sweep above into a test
+        that passes by finding nothing. The two probes below are real
+        module-level functions (``inspect.getsource`` needs a file), identical
+        but for whether the body reads ``confidence``.
+        """
+        assert _parameters_never_read(_probe_ignores_confidence) == ["confidence"]
+        assert _parameters_never_read(_probe_reads_confidence) == []
+
+    def test_the_detector_ignores_a_name_that_only_appears_in_the_docstring(self):
+        """The 0.1.0 defect read as covered precisely because of this."""
+        assert _parameters_never_read(_probe_names_confidence_only_in_docstring) == [
+            "confidence"
+        ]
+
+
+# --- probes for the detector self-test above. Not part of the public API. ---
+
+
+def _probe_ignores_confidence(losses, confidence=0.99):
+    """Looks like it uses confidence. It does not."""
+    return sum(losses) * 0.50
+
+
+def _probe_reads_confidence(losses, confidence=0.99):
+    """Uses it."""
+    return sum(losses) * confidence
+
+
+def _probe_names_confidence_only_in_docstring(losses, confidence=0.99):
+    """Computes the loss at the given confidence level.
+
+    confidence: the confidence level. (Named here, never read below.)
+    """
+    return sum(losses)
+
+
 class TestBasisPointRendering:
     """A scenario named '+300 bps' reported '+3 bps' in 0.1.0."""
 
@@ -260,20 +381,57 @@ class TestReadmeDocumentsTheRealApi:
         assert len(API_REFERENCE) < len(README), "API Reference scoping did not narrow anything"
 
     def test_every_exported_name_appears_in_the_api_reference(self):
-        """Scoped to the API Reference, not the whole README.
+        """Anchored to the DEFINITION LINE, not to the name appearing anywhere.
 
-        Against the whole README this passed while 10 of the exported names were
-        absent from the API Reference, because the generated quickstart fence
-        mentions them.
+        Two rounds of the same defect. First, searching the whole README let the
+        generated quickstart fence satisfy the gate for 10 exported names.
+        Scoping to the API Reference cut that to 3 -- but did not eliminate the
+        class, because unrelated text *inside* the block still satisfied it:
+
+          * ``expected_loss(losses)`` could be deleted, held up by the
+            ``StressResult(scenario, expected_loss, ...)`` field name
+          * the whole ``Loan(...)`` entry could be deleted, held up by the
+            comment ``# returns stressed Loan``
+          * the whole ``StressResult(...)`` entry could be deleted, held up by
+            the comment ``# -> StressResult``
+
+        Two of those three are the headline public types. An entry only counts
+        if a line *starts* with the name -- ``name(``, or a bare ``name``
+        followed by whitespace -- which is how every real entry is written and
+        which no incidental mention in a field list or trailing comment can fake.
         """
         missing = [
             name
             for name in cdfistress.__all__
-            if not re.search(rf"\b{re.escape(name)}\b", API_REFERENCE)
+            if not re.search(rf"^{re.escape(name)}(?:\(|\s|$)", API_REFERENCE, re.M)
         ]
         assert not missing, (
-            f"exported but absent from the README API Reference: {missing}"
+            "exported but not DEFINED on their own line in the README API "
+            f"Reference: {missing}. A mention inside another entry's argument "
+            "list or trailing comment does not document a name."
         )
+
+    def test_an_incidental_mention_does_not_satisfy_the_name_gate(self):
+        """Prove the anchor actually rejects what the old pattern accepted.
+
+        Guards the regex itself: if the anchor is ever loosened back to a bare
+        word search, this fails rather than silently reopening the hole.
+        """
+        decoy = (
+            "StressResult(scenario, expected_loss, var_95)\n"
+            "apply_shock_to_loan(loan, scenario)        # returns stressed Loan\n"
+            "  .run_simulation(scenario)                # -> StressResult\n"
+        )
+        anchored = lambda n: re.search(rf"^{re.escape(n)}(?:\(|\s|$)", decoy, re.M)
+        bare = lambda n: re.search(rf"\b{re.escape(n)}\b", decoy)
+        for name in ("expected_loss", "Loan"):
+            assert bare(name), f"{name} does appear incidentally in the decoy"
+            assert not anchored(name), (
+                f"the anchored pattern still accepts an incidental mention of {name}"
+            )
+        # ...and it must still accept a real definition line.
+        assert anchored("StressResult")
+        assert anchored("apply_shock_to_loan")
 
     def test_every_public_method_of_a_documented_class_is_in_the_api_reference(self):
         """Documented *methods* were not covered at all.
@@ -290,7 +448,9 @@ class TestReadmeDocumentsTheRealApi:
                 attr = inspect.getattr_static(cls, name)
                 if not (inspect.isfunction(attr) or isinstance(attr, property)):
                     continue
-                if not re.search(rf"\.{re.escape(name)}\b", API_REFERENCE):
+                # Anchored the same way as the name gate above: the member must
+                # start its own indented line, not merely appear somewhere.
+                if not re.search(rf"^\s+\.{re.escape(name)}\b", API_REFERENCE, re.M):
                     missing.append(f"{cls.__name__}.{name}")
         assert not missing, (
             f"public members absent from the README API Reference: {missing}"

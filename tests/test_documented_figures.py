@@ -345,6 +345,140 @@ class TestLoadBearingSafetyDocstring:
         )
 
 
+# Wordings that assert the engine LACKS a per-segment mechanism.  It does not:
+# both ``_compute_loss_distribution`` and ``default_probabilities`` resolve
+# ``SECTOR_DEFAULT_RATES.get(loan.sector, ...)`` per loan, and the sample
+# portfolio already yields several distinct PDs.  What is absent is CALIBRATION.
+_MECHANISM_DENIALS = [
+    re.compile(r"no\s+mechanism", re.I),
+    re.compile(r"mechanism\s+for\s+stressing", re.I),
+    re.compile(r"lacks?\s+(?:the\s+|any\s+|a\s+)?mechanism", re.I),
+    re.compile(r"without\s+(?:any\s+|the\s+|a\s+)?mechanism", re.I),
+]
+
+# The exact sentence that shipped in the notebook and survived the 0.2.0 wording
+# fix.  Kept verbatim so the patterns above can be proven non-inert.
+#
+# NOTE TO A FUTURE AUDITOR: this is the ONLY remaining occurrence of that wording
+# anywhere in the repo or the sdist, and it is deliberate.  `grep -rn "mechanism
+# for stressing one sector"` returning exactly this line is the expected state;
+# a second hit anywhere else is the defect.  tests/ is excluded from the sweep in
+# `_prose_artifacts` precisely so this file can quote what it forbids.
+_THE_SENTENCE_THAT_SHIPPED = (
+    "The engine has no mechanism for stressing one sector or geography and not "
+    "another, so a label like \"Retail Crash\" would be misleading."
+)
+
+
+def _prose_artifacts():
+    """``(label, text)`` for every tracked artifact a reader can act on.
+
+    Covers README, CHANGELOG, every shipped/generator ``.py``, and -- the gap
+    this exists to close -- every MARKDOWN cell of the demo notebook.
+    ``scripts/render_notebook.py`` executes code cells only, so notebook prose
+    was gated by nothing at all; that is how the false sector claim survived
+    the 0.2.0 rewrite of ``builder.py``, README limitation 1 and the CHANGELOG.
+
+    ``tests/`` is deliberately excluded: this gate and the docstring gate above
+    have to quote the forbidden wording in order to forbid it.
+    """
+    import json
+
+    from render_notebook import NOTEBOOK
+
+    items = [
+        (name, (REPO_ROOT / name).read_text(encoding="utf-8"))
+        for name in ("README.md", "CHANGELOG.md")
+    ]
+    for package in ("cdfistress", "scripts"):
+        for path in sorted((REPO_ROOT / package).rglob("*.py")):
+            items.append(
+                (str(path.relative_to(REPO_ROOT)), path.read_text(encoding="utf-8"))
+            )
+    notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    for index, cell in enumerate(notebook["cells"]):
+        if cell.get("cell_type") == "markdown":
+            items.append(
+                (f"{NOTEBOOK.name} markdown cell [{index}]", "".join(cell["source"]))
+            )
+    return items
+
+
+class TestNoTrackedArtifactDeniesTheMechanism:
+    """The 0.2.0 wording fix reached builder.py, the README and the CHANGELOG.
+
+    It did not reach the notebook, because nothing swept notebook prose. These
+    tests sweep every artifact a reader can act on, not just the ones someone
+    remembered to fix.
+    """
+
+    def test_the_denial_patterns_are_not_inert(self):
+        """Guard: the patterns must match the sentence that actually shipped.
+
+        Without this, a typo in a pattern turns the sweep below into a test that
+        passes by matching nothing -- the same failure mode as the ungated
+        notebook it replaces.
+        """
+        flat = " ".join(_THE_SENTENCE_THAT_SHIPPED.split())
+        matched = [p.pattern for p in _MECHANISM_DENIALS if p.search(flat)]
+        assert matched, (
+            "no denial pattern matches the wording that shipped in the notebook; "
+            "the sweep below covers nothing"
+        )
+
+    def test_the_sweep_covers_the_notebook_markdown_and_the_docs(self):
+        """Guard against the sweep silently iterating over nothing."""
+        labels = [label for label, _ in _prose_artifacts()]
+        assert "README.md" in labels
+        assert "CHANGELOG.md" in labels
+        assert any(label.endswith("scenarios/builder.py") for label in labels)
+        markdown_cells = [label for label in labels if "markdown cell" in label]
+        assert len(markdown_cells) >= 5, (
+            f"only {len(markdown_cells)} notebook markdown cells swept; the "
+            "notebook prose gap is not actually covered"
+        )
+
+    def test_no_tracked_artifact_claims_the_engine_lacks_the_mechanism(self):
+        offenders = []
+        for label, text in _prose_artifacts():
+            flat = " ".join(text.split())
+            for pattern in _MECHANISM_DENIALS:
+                match = pattern.search(flat)
+                if match:
+                    offenders.append(
+                        f"{label}: ...{flat[max(0, match.start() - 60):match.end() + 60]}..."
+                    )
+        assert not offenders, (
+            "artifact(s) claim the engine has no per-segment mechanism. It has one: "
+            "_compute_loss_distribution and default_probabilities both resolve "
+            "SECTOR_DEFAULT_RATES per loan. What is missing is calibration. "
+            + "\n".join(offenders)
+        )
+
+    def test_the_notebook_scenario_section_rests_on_calibration_not_mechanism(self):
+        """The positive half: the corrected wording must actually be present.
+
+        Deleting the paragraph outright would satisfy the negative sweep above.
+        """
+        import json
+
+        from render_notebook import NOTEBOOK
+
+        notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+        markdown = " ".join(
+            " ".join("".join(c["source"]).split())
+            for c in notebook["cells"]
+            if c.get("cell_type") == "markdown"
+        )
+        assert "calibration, not mechanism" in markdown.lower(), (
+            "the notebook no longer states that what is missing is calibration, "
+            "not mechanism -- the wording builder.py and README limitation 1 use"
+        )
+        assert "SECTOR_DEFAULT_RATES" in markdown, (
+            "the notebook no longer names the per-loan mechanism it rests the claim on"
+        )
+
+
 class TestSectorDifferentiationClaim:
     """The claim the 0.2.0 wording change rests on is itself a measured figure."""
 
@@ -376,6 +510,58 @@ class TestSectorDifferentiationClaim:
         assert actual_pds == len(
             {SECTOR_DEFAULT_RATES.get(l.sector, 0.035) for l in documented_portfolio}
         )
+
+    def test_the_notebooks_copy_of_the_same_counts_is_real(self, documented_portfolio):
+        """The notebook prose repeats these counts, so it is a measured figure too.
+
+        The CHANGELOG's copy was gated; the notebook's was not, because nothing
+        swept notebook markdown at all. Adding the sentence without this gate
+        would have reintroduced exactly the defect this round exists to close:
+        a hand-typed number in an artifact nothing re-derives.
+        """
+        import json
+
+        from render_notebook import NOTEBOOK
+
+        words = {"three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8}
+        notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+        markdown = " ".join(
+            " ".join("".join(c["source"]).split())
+            for c in notebook["cells"]
+            if c.get("cell_type") == "markdown"
+        )
+        match = re.search(r"produces (\w+) distinct PDs across (\w+) sectors", markdown)
+        assert match, "the notebook no longer states the distinct-PD / sector counts"
+        stated_pds = words[match.group(1).lower()]
+        stated_sectors = words[match.group(2).lower()]
+
+        # The notebook builds its portfolio with the same call the quickstart does.
+        engine = MonteCarloEngine(loans=documented_portfolio, available_capital=5_000_000)
+        actual_pds = len(set(engine.default_probabilities(from_standard("2008_recession")).values()))
+        actual_sectors = len({loan.sector for loan in documented_portfolio})
+
+        assert (stated_pds, stated_sectors) == (actual_pds, actual_sectors), (
+            f"notebook says {stated_pds} distinct PDs across {stated_sectors} sectors; "
+            f"measured {actual_pds} across {actual_sectors}"
+        )
+
+    def test_the_notebook_and_changelog_state_the_same_counts(self):
+        """Two documents, one measurement. 0.1.0's defect was letting them diverge."""
+        import json
+
+        from render_notebook import NOTEBOOK
+
+        notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+        markdown = " ".join(
+            " ".join("".join(c["source"]).split())
+            for c in notebook["cells"]
+            if c.get("cell_type") == "markdown"
+        )
+        nb_match = re.search(r"produces (\w+) distinct PDs across (\w+) sectors", markdown)
+        cl_match = re.search(r"spans (\w+) sectors and (\w+)\s*\n?\s*distinct PDs", CHANGELOG)
+        assert nb_match and cl_match
+        assert nb_match.group(1).lower() == cl_match.group(2).lower(), "PD counts disagree"
+        assert nb_match.group(2).lower() == cl_match.group(1).lower(), "sector counts disagree"
 
 
 class TestChangelogTestCount:

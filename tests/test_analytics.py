@@ -66,9 +66,6 @@ class TestCapitalAdequacy:
         losses = np.array([100, 200, 300, 400, 500])
         assert buffer_breach_count(losses, 350) == 2
 
-    def test_tier1_under_stress(self, loss_array):
-        t1 = tier1_under_stress(10_000_000, loss_array, risk_weighted_assets=50_000_000, confidence=0.99)
-        assert isinstance(t1, float)
 
     def test_capital_report_keys(self, loss_array):
         report = capital_adequacy_report(5_000_000, loss_array)
@@ -78,6 +75,99 @@ class TestCapitalAdequacy:
     def test_breach_rate_in_range(self, loss_array):
         report = capital_adequacy_report(100_000, loss_array)
         assert 0 <= report["breach_rate"] <= 1
+
+class TestTier1UnderStress:
+    """``tier1_under_stress`` is an exported, README-documented, regulator-facing
+    capital ratio whose only test asserted ``isinstance(t1, float)``.
+
+    All four of these mutations shipped 144 passed against that test:
+
+      * replacing the whole body with ``return 0.1234``
+      * ``tier1_capital - stressed_loss`` -> ``+`` (adds losses instead of absorbing)
+      * ``value_at_risk(losses, confidence)`` -> ``value_at_risk(losses, 0.50)``,
+        ignoring the ``confidence`` argument entirely -- the identical shape to
+        0.1.0's ``simulate_default_events(seed=...)``
+      * ``/ risk_weighted_assets`` -> ``/ risk_weighted_assets * 100`` (percent
+        reported where a fraction is documented, a 100x capital-ratio error)
+
+    The arithmetic below is hand-computed, not read back out of the function.
+    ``losses`` is 0, 100k, ... 10.0MM in even steps, so linear-interpolated
+    percentiles land exactly on an element: VaR(0.99) = $9.90MM, VaR(0.50) = $5.00MM.
+    """
+
+    # 101 evenly spaced points, so np.percentile hits an element exactly.
+    LOSSES = np.arange(0, 101, dtype=float) * 100_000.0
+    TIER1 = 10_000_000.0
+    RWA = 50_000_000.0
+
+    def test_var_used_is_the_one_this_class_hand_computes(self):
+        """Guard: if the percentile convention moves, the constants below are wrong."""
+        assert value_at_risk(self.LOSSES, 0.99) == pytest.approx(9_900_000.0)
+        assert value_at_risk(self.LOSSES, 0.50) == pytest.approx(5_000_000.0)
+
+    def test_equals_tier1_less_stressed_var_over_rwa(self):
+        """The whole closed form at once. ($10.00MM - $9.90MM) / $50MM = 0.002."""
+        t1 = tier1_under_stress(
+            self.TIER1, self.LOSSES, risk_weighted_assets=self.RWA, confidence=0.99
+        )
+        assert t1 == pytest.approx(0.002), (
+            f"expected 0.002 = ($10,000,000 - $9,900,000) / $50,000,000; got {t1!r}"
+        )
+
+    def test_losses_are_absorbed_not_added(self):
+        """A bigger stressed loss must LOWER the residual ratio, never raise it."""
+        small = tier1_under_stress(
+            self.TIER1, self.LOSSES * 0.1, risk_weighted_assets=self.RWA, confidence=0.99
+        )
+        large = tier1_under_stress(
+            self.TIER1, self.LOSSES, risk_weighted_assets=self.RWA, confidence=0.99
+        )
+        assert large < small, (
+            f"larger losses produced a HIGHER ratio ({large!r} vs {small!r}); "
+            "losses are being added to capital instead of absorbed by it"
+        )
+        # ...and by exactly the loss difference, scaled by RWA.
+        assert small - large == pytest.approx((9_900_000.0 - 990_000.0) / self.RWA)
+
+    def test_the_confidence_argument_is_actually_used(self):
+        """0.1.0 shipped a method that advertised a parameter it never read."""
+        strict = tier1_under_stress(
+            self.TIER1, self.LOSSES, risk_weighted_assets=self.RWA, confidence=0.99
+        )
+        loose = tier1_under_stress(
+            self.TIER1, self.LOSSES, risk_weighted_assets=self.RWA, confidence=0.50
+        )
+        assert strict != loose, (
+            "confidence made no difference to the result; the argument is being ignored"
+        )
+        assert strict == pytest.approx(0.002)
+        assert loose == pytest.approx(0.100)
+        assert strict < loose, "a stricter confidence must leave less residual capital"
+
+    def test_result_is_a_fraction_of_rwa_not_a_percentage(self):
+        """A 100x error here reads as a comfortably capitalised institution."""
+        flat_losses = np.full(200, 1_000_000.0)
+        t1 = tier1_under_stress(
+            5_000_000.0, flat_losses, risk_weighted_assets=50_000_000.0, confidence=0.99
+        )
+        assert t1 == pytest.approx(0.08), (
+            f"expected the fraction 0.08 (i.e. 8%), got {t1!r}; a value of 8.0 means "
+            "the ratio is being rendered as a percentage while the docs call it a ratio"
+        )
+        assert 0.0 < t1 < 1.0
+
+    def test_negative_when_stressed_loss_exceeds_tier1(self):
+        """The undercapitalised case must be representable, not clamped to zero."""
+        t1 = tier1_under_stress(
+            1_000_000.0, self.LOSSES, risk_weighted_assets=self.RWA, confidence=0.99
+        )
+        assert t1 == pytest.approx((1_000_000.0 - 9_900_000.0) / self.RWA)
+        assert t1 < 0
+
+    def test_zero_rwa_returns_zero(self):
+        assert tier1_under_stress(
+            self.TIER1, self.LOSSES, risk_weighted_assets=0.0, confidence=0.99
+        ) == 0.0
 
 
 class TestReports:

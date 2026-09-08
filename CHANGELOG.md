@@ -242,7 +242,7 @@ tripwire, and an unenforceable cap would only hide it.
 
 ### Test suite
 
-64 tests in 0.1.0 -> 144 in 0.2.0. The gates cover committed-artifact staleness,
+64 tests in 0.1.0 -> 161 in 0.2.0. The gates cover committed-artifact staleness,
 notebook execution, the public API surface, version-site agreement, basis-point
 rendering, the CI workflow's own action pinning and interpreter matrix, and -- added
 while closing the hostile audit of this release -- declared-vs-imported dependencies,
@@ -255,6 +255,35 @@ searched the **whole** README, so the auto-generated quickstart fence satisfied 
 the exported names could be deleted from the API Reference with the suite green, and
 documented *methods* were not covered at all. It is now scoped to the API Reference
 section and extended to the public methods of every documented class.
+
+Three further gaps were found by a scoped re-audit of that work and closed.
+
+The API-surface gate was still satisfiable by unrelated text. Scoping it to the API
+Reference cut the surviving deletions from 10 to 3, but did not eliminate the class:
+`expected_loss(losses)` was held up by the `StressResult(scenario, expected_loss, ...)`
+field name, and the whole `Loan(...)` and `StressResult(...)` entries -- the two headline
+public types -- by the trailing comments `# returns stressed Loan` and `# -> StressResult`.
+Both the name gate and the member gate now anchor on the definition line (`^name(`,
+`^  .member`) rather than the name appearing anywhere in the block. All 26 exported names
+and every documented member now fail on deletion.
+
+The 0.2.0 sector-scenario wording fix reached `builder.py`, README limitation 1 and this
+changelog, but not the demo notebook, which still told readers the engine could not resolve
+sector per loan. Nothing caught it because `scripts/render_notebook.py` executes code cells
+only -- notebook markdown was gated by nothing at all, while the notebook's own summary told
+readers it "cannot drift". The notebook prose is corrected, its summary now says plainly
+that markdown is not executed, and a new sweep checks the README, this changelog, every
+shipped and generator `.py`, and every notebook markdown cell for wordings that deny the
+per-loan mechanism.
+
+`tier1_under_stress` -- exported, README-documented and regulator-facing -- had one test,
+which asserted only `isinstance(t1, float)`. Replacing its body with `return 0.1234`,
+flipping `tier1_capital - stressed_loss` to `+`, hardcoding `value_at_risk(losses, 0.50)`
+so the `confidence` argument was ignored, and rendering the ratio as a percentage all
+shipped 144 passed. It now has hand-computed value gates, and the unused-argument sweep --
+previously `MonteCarloEngine` methods and the name `seed` only -- now covers every
+parameter of every exported module-level function, which is the shape of the 0.1.0
+`simulate_default_events(seed=...)` defect.
 
 ## [0.1.0] - 2026-05-11
 
