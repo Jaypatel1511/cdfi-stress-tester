@@ -242,13 +242,17 @@ tripwire, and an unenforceable cap would only hide it.
 
 ### Test suite
 
-64 tests in 0.1.0 -> 161 in 0.2.0. The gates cover committed-artifact staleness,
+64 tests in 0.1.0 -> 190 in 0.2.0. The gates cover committed-artifact staleness,
 notebook execution, the public API surface, version-site agreement, basis-point
 rendering, the CI workflow's own action pinning and interpreter matrix, and -- added
 while closing the hostile audit of this release -- declared-vs-imported dependencies,
 what the sdist actually ships, licence and classifier metadata, correlation-matrix
 validation, the exact values `default_probabilities` returns, and every measured figure
-this changelog and the README transcribe by hand.
+this changelog and the README transcribe by hand. The final scoped re-audit added gates on
+every figure the demo notebook's markdown states, an inventory gate that fails on any
+ungated figure added to that markdown later, per-pattern liveness probes for the
+mechanism-denial sweep, value gates on `tail_loss(pct=...)`, and a stricter unused-argument
+detector.
 
 Two earlier gates were weaker than they read. `test_every_exported_name_appears_in_the_readme`
 searched the **whole** README, so the auto-generated quickstart fence satisfied it: 10 of
@@ -281,9 +285,124 @@ which asserted only `isinstance(t1, float)`. Replacing its body with `return 0.1
 flipping `tier1_capital - stressed_loss` to `+`, hardcoding `value_at_risk(losses, 0.50)`
 so the `confidence` argument was ignored, and rendering the ratio as a percentage all
 shipped 144 passed. It now has hand-computed value gates, and the unused-argument sweep --
-previously `MonteCarloEngine` methods and the name `seed` only -- now covers every
+previously `MonteCarloEngine` methods and the name `seed` only -- now iterates every
 parameter of every exported module-level function, which is the shape of the 0.1.0
-`simulate_default_events(seed=...)` defect.
+`simulate_default_events(seed=...)` defect. What that sweep DETECTS is qualified two
+sections below; the sentence as first written was true of the iteration and misleading
+about the detection.
+
+### Fixed - three gates added in this release did not do what they said
+
+A scoped re-audit found the package source clean and both renderers in agreement with what
+is committed. What it found broken was the prose and three of the gates added alongside it.
+All three are closed below, and each fix was proven by re-running the exact mutation that
+survived it.
+
+**The unused-argument sweep counted a validation-only read as a use.**
+`_parameters_never_read` reported `unread=[]` for a parameter that appears only in a guard,
+so in `cdfistress/analysis/var.py` the mutation `int(len(losses) * pct)` ->
+`int(len(losses) * 0.01)` shipped 161 passed with `pct` a dead knob: the name still occurs
+in `if not 0 < pct < 1`, so a plain AST name count called it used. Every function in that
+module validates its parameters, which made the sweep near-inert across the whole module,
+and `tail_loss` had exactly one test, which exercised only `pct=0.01`. The detector
+now discounts a read inside a validation guard (`assert`, or an `if` whose branches only
+raise) and a read that occurs after the name has been reassigned in the body. `tail_loss`
+also gained hand-computed value gates on `pct` at 1%, 10%, 25% and 50% of a 1..100 ramp, so
+the mutation is red on its own merits as well. Checked and NOT a hole, contrary to the
+prediction that prompted the check: a parameter read only inside a nested `def`,
+comprehension, lambda or generator expression is still detected -- `ast.walk` descends into
+all of them, and a probe pins that so the fix cannot over-correct into a false positive.
+
+**The notebook's positive scenario gate searched the whole notebook.** It joined every
+markdown cell and substring-searched the union, so it never checked the section it named.
+Rewriting the scenario cell's key line to *"Sector targeting is simply unsupported today."*,
+removing its `SECTOR_DEFAULT_RATES` mention, and parking a decoy reading *"Unrelated aside:
+calibration, not mechanism. SECTOR_DEFAULT_RATES."* in the title cell shipped 161 passed.
+That is the identical defect class the API-surface gate was anchored in this same release to
+eliminate, reintroduced by the gate written to replace it. It is now scoped to the single
+markdown cell carrying the scenario heading -- the way the API gate scopes to
+`## API Reference` -- and asserts that exactly one such cell exists.
+
+**The denial sweep was one live tripwire wearing four patterns.** Its non-inertness guard
+was `assert any(...)` over a single shipped sentence, which proves only that SOME pattern
+matches. Patterns 3 and 4 never matched that sentence and were never exercised: replacing
+pattern 1, 3 or 4 individually with `ZZZZQQQ_NEVER_MATCHES` shipped 161 passed in all three
+cases. Each pattern now carries its own probe and is asserted live individually and
+end-to-end through the sweep helper. The list was broadened from four wordings to seven,
+which closes five paraphrases that previously walked through: modal denials built on
+*cannot* or *is unable to* followed by a targeting verb and a segment noun; existential ones
+built on *there is no way* or *no capability*; and a bare negation of the per-loan sector
+resolution the engine actually performs. The five survivor sentences are quoted verbatim in
+`tests/test_documented_figures.py`, which the sweep excludes precisely so it can hold what
+it forbids. They are described rather than quoted here because quoting them would trip the
+sweep on this file -- which is the reported-speech blindness described next, encountered
+while writing this entry.
+
+**What that sweep still cannot do**, stated plainly because the previous description
+overstated it. It matches an ENUMERATED FAMILY OF DENIAL SHAPES, not meaning: a phrasing
+nobody listed walks through, and no list of regexes fixes that. It is also deliberately
+blind to reported speech -- this changelog has to be able to describe a wording in order to
+record having removed it, and a regex cannot tell that from asserting it, which is why
+`tests/` is excluded from the sweep and why some historical descriptions here are phrased
+around the forbidden shapes rather than inside them. The guarantee that the CORRECT
+statement is present therefore comes from the POSITIVE gates on the notebook scenario cell,
+README limitation 1 and the `create_recession_scenario` docstring, not from the sweep. A
+companion gate now asserts the sweep does not flag the true statements those documents make,
+so the natural response to a false positive cannot be to weaken a pattern back to inertness.
+
+### Fixed - the notebook summary described a gate that did not exist
+
+The notebook summary told readers its markdown "load-bearing claims are gated separately by
+`tests/test_documented_figures.py`". Measured: 2 of the 16 figures in that markdown were
+gated, and the 14 ungated ones included BOTH test-file paths named in that same paragraph --
+the reintroduced shape of the `tests/test_readme_artifact.py` defect recorded above. This is
+the second consecutive summary in this cell to reassure readers about a guarantee it did not
+have; the first said the prose "cannot drift".
+
+Ungated then, gated now, each re-derived from the library, the notebook's own code cells, or
+the artifact it names: the portfolio size (3 sites), the iteration count (2 sites, one of
+them checked against the code cell its section introduces), the VaR confidence levels, the
+sector list, the `0.1.0` / `0.2.0` version strings (3 sites, tied to the release the
+changelog records the removal under), the cited README limitation number, the summary
+scenario list, both test-file paths (which must also actually mention the notebook), and the
+GitHub and PyPI links (which must match the declared project metadata).
+
+An INVENTORY gate backs them: it strips heading and list numbering, removes every token a
+registered figure pattern consumes, and fails if any digit remains -- so a new hand-typed
+number added to this notebook's prose is red until it is gated. A second gate requires every
+registered pattern to name a value gate that exists, so the inventory cannot be silenced by
+adding a catch-all pattern that consumes tokens and checks nothing. The summary paragraph
+was rewritten to state what is gated, what is not, and what the residual risk is.
+
+Two figures in this changelog were ungated for the same reason and are now covered: the
+portfolio size in *"the 50-loan sample portfolio spans six sectors and five distinct PDs"* --
+the sector and PD counts in that sentence were gated and the size in the same sentence was
+not, so `"50-loan"` -> `"900-loan"` shipped 161 passed -- and the word form
+*"**eleven** code cells"*, whose digit form earlier in this same section was already gated.
+
+Corrected in the notebook: cell 2 said the sample portfolio spans *"the sectors the library
+tracks"* and listed six. `SECTOR_DEFAULT_RATES` has seven; the catch-all `other` rate is
+never drawn by the sample generator. The sentence now says "six of the seven" and names the
+omission, and one gate derives all three facts. The summary's scenario list also omitted
+`mild_downturn`; it is complete now and gated against `STANDARD_SCENARIOS`.
+
+### Deferred - inconsistent tie handling inside one return dict
+
+Recorded, not changed, so it is not rediscovered as new.
+
+`conditional_var` selects its tail with `losses >= var`; `buffer_breach_count` counts with
+`losses > buffer`. Flipping either boundary ships the suite green, because both are
+tie-only sensitivities and the Monte Carlo output is continuous: measured 996 unique values
+in 1,000 paths, zero ties at VaR-99, and a CVaR delta of exactly 0.0.
+
+The reason to record it anyway is that the two conventions are INCONSISTENT WITH EACH OTHER
+inside one return value. `capital_adequacy_report` computes `cvar_99` on an inclusive
+boundary and `breaches` / `breach_rate` on an exclusive one. On a tied or discretised loss
+distribution -- a small portfolio, a coarse loss grid, a degenerate scenario -- that reads
+as `breaches = 0` while paths sit exactly on the buffer, while `conditional_var` with `>`
+would yield an empty tail and silently fall back to returning VaR itself. Pick one
+convention for both, and gate it on a deliberately tied distribution. Do not fix one
+boundary alone.
 
 ## [0.1.0] - 2026-05-11
 

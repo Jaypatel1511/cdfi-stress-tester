@@ -215,13 +215,54 @@ class TestDefaultProbabilities:
 
 
 
+def _is_validation_guard(stmt) -> bool:
+    """True for a statement whose only effect is to reject bad input.
+
+    ``assert ...``, and ``if <cond>: raise ...`` where every branch does nothing
+    but raise (possibly via a nested guard). Reading a parameter here proves the
+    signature validates it, NOT that the computation consumes it.
+    """
+    if isinstance(stmt, ast.Assert):
+        return True
+    if isinstance(stmt, ast.If):
+
+        def only_raises(body) -> bool:
+            return bool(body) and all(
+                isinstance(s, ast.Raise)
+                or (isinstance(s, ast.If) and _is_validation_guard(s))
+                for s in body
+            )
+
+        return only_raises(stmt.body) and (not stmt.orelse or only_raises(stmt.orelse))
+    return False
+
+
 def _parameters_never_read(func):
-    """Names in ``func``'s signature that its body never reads.
+    """Names in ``func``'s signature that its body never actually consumes.
 
     Parsed from the AST with the docstring dropped. A substring search over the
     source is not enough: a function that ignores a parameter almost always
     still names it in its own docstring, which is exactly how 0.1.0's
     ``simulate_default_events(seed=...)`` read as covered.
+
+    TWO KINDS OF NON-USE THAT AN AST ``Name`` COUNT MISSES, both found live:
+
+    1. VALIDATION-ONLY READS.  ``tail_loss`` validates ``pct`` in
+       ``if not 0 < pct < 1: raise`` and then computes the tail width. Replacing
+       ``int(len(losses) * pct)`` with ``int(len(losses) * 0.01)`` leaves ``pct``
+       named in the guard, so a plain Name count calls it used and the knob is
+       dead. Every function in ``analysis/var.py`` validates its parameters, so
+       that hole made the sweep near-inert across the whole module.
+
+    2. READS SHADOWED BY A REASSIGNMENT.  ``confidence = 0.50`` inserted before
+       ``value_at_risk(losses, confidence)`` makes every later read a read of the
+       local, not of the parameter.
+
+    So: a read inside a validation guard does not count, and neither does a read
+    that occurs after the name has been assigned in the body. NOT a hole (checked,
+    and the opposite of what was predicted): parameters read only inside a nested
+    ``def``, comprehension, lambda or generator expression ARE detected --
+    ``ast.walk`` descends into all of them.
     """
     node = ast.parse(textwrap.dedent(inspect.getsource(func))).body[0]
     body = node.body
@@ -232,16 +273,29 @@ def _parameters_never_read(func):
         and isinstance(body[0].value.value, str)
     ):
         body = body[1:]  # drop the docstring
-    read = {
-        sub.id
-        for stmt in body
-        for sub in ast.walk(stmt)
-        if isinstance(sub, ast.Name)
-    }
+
+    shadowed: set = set()
+    consumed: set = set()
+    for stmt in body:
+        loads = {
+            sub.id
+            for sub in ast.walk(stmt)
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
+        }
+        if not _is_validation_guard(stmt):
+            # Loads are evaluated before this statement's own stores take effect,
+            # so a read in `x = x + 1` still counts as consuming the parameter.
+            consumed |= loads - shadowed
+        shadowed |= {
+            sub.id
+            for sub in ast.walk(stmt)
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store)
+        }
+
     return [
         name
         for name in inspect.signature(func).parameters
-        if name not in read and name not in ("self", "cls")
+        if name not in consumed and name not in ("self", "cls")
     ]
 
 
@@ -313,6 +367,32 @@ class TestNoPublicFunctionIgnoresAnArgument:
             "confidence"
         ]
 
+    def test_the_detector_ignores_a_read_that_only_validates(self):
+        """The live survivor: `int(len(losses) * pct)` -> `int(len(losses) * 0.01)`.
+
+        `pct` stays named in `if not 0 < pct < 1: raise`, so a plain AST Name
+        count called it used and the dead knob shipped green. Every function in
+        analysis/var.py validates its arguments, so this was not one function's
+        edge case -- it made the sweep near-inert across the module.
+        """
+        assert _parameters_never_read(_probe_only_validates_pct) == ["pct"]
+        assert _parameters_never_read(_probe_validates_and_uses_pct) == []
+
+    def test_the_detector_ignores_a_read_shadowed_by_a_reassignment(self):
+        """`confidence = 0.50` before the use makes later reads reads of the local."""
+        assert _parameters_never_read(_probe_shadows_confidence) == ["confidence"]
+
+    def test_the_detector_still_sees_a_read_inside_a_nested_scope(self):
+        """Guard against over-correcting into a FALSE POSITIVE.
+
+        The two rules above subtract reads. If they subtracted too much, the
+        sweep would go red on healthy code and the natural fix would be to weaken
+        it back to inertness. Parameters consumed only inside a comprehension,
+        lambda, generator or nested def must still read as used.
+        """
+        assert _parameters_never_read(_probe_reads_in_nested_scopes) == []
+        assert _parameters_never_read(_probe_reads_after_a_self_referential_rebind) == []
+
 
 # --- probes for the detector self-test above. Not part of the public API. ---
 
@@ -333,6 +413,50 @@ def _probe_names_confidence_only_in_docstring(losses, confidence=0.99):
     confidence: the confidence level. (Named here, never read below.)
     """
     return sum(losses)
+
+
+def _probe_only_validates_pct(losses, pct=0.01):
+    """Shaped exactly like the live tail_loss survivor."""
+    if len(losses) == 0:
+        raise ValueError("losses array must not be empty")
+    if not 0 < pct < 1:
+        raise ValueError("pct must be in (0, 1)")
+    n_tail = max(1, int(len(losses) * 0.01))
+    return sum(sorted(losses)[-n_tail:]) / n_tail
+
+
+def _probe_validates_and_uses_pct(losses, pct=0.01):
+    """The healthy shape: validated AND consumed."""
+    if not 0 < pct < 1:
+        raise ValueError("pct must be in (0, 1)")
+    n_tail = max(1, int(len(losses) * pct))
+    return sum(sorted(losses)[-n_tail:]) / n_tail
+
+
+def _probe_shadows_confidence(losses, confidence=0.95):
+    """Validates it, then throws it away."""
+    if not 0 < confidence < 1:
+        raise ValueError("confidence must be in (0, 1)")
+    confidence = 0.50
+    return sum(losses) * confidence
+
+
+def _probe_reads_in_nested_scopes(losses, confidence=0.95, pct=0.01, seed=0):
+    """Every parameter is consumed, but only inside a nested scope."""
+    scale = lambda x: x * confidence  # noqa: E731
+    squared = [scale(x) for x in losses]
+    shifted = (x + pct for x in squared)
+
+    def offset():
+        return seed
+
+    return sum(shifted) + offset()
+
+
+def _probe_reads_after_a_self_referential_rebind(losses, confidence=0.95):
+    """`confidence` is read on the right-hand side of its own rebind. That is a use."""
+    confidence = min(confidence, 0.99)
+    return sum(losses) * confidence
 
 
 class TestBasisPointRendering:

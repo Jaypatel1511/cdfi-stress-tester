@@ -50,6 +50,33 @@ class TestCVaR:
     def test_tail_loss_gt_mean(self, loss_array):
         assert tail_loss(loss_array, pct=0.01) > expected_loss(loss_array)
 
+    def test_tail_loss_actually_selects_the_tail_pct_asks_for(self):
+        """`pct` must set the tail width, not merely be validated and discarded.
+
+        The live survivor this closes: `int(len(losses) * pct)` ->
+        `int(len(losses) * 0.01)` shipped 161 passed, because the only other
+        tail_loss test passes the default pct=0.01 and so cannot tell the two
+        apart. Expectations below are computed by hand from a 1..100 ramp, not
+        re-derived from the implementation -- a gate that recomputes the formula
+        under test moves with the mutation and proves nothing.
+        """
+        losses = np.arange(1.0, 101.0)  # 100 paths, worst is 100.0
+        assert tail_loss(losses, pct=0.01) == pytest.approx(100.0)  # worst 1
+        assert tail_loss(losses, pct=0.10) == pytest.approx(95.5)   # mean(91..100)
+        assert tail_loss(losses, pct=0.25) == pytest.approx(88.0)   # mean(76..100)
+        assert tail_loss(losses, pct=0.50) == pytest.approx(75.5)   # mean(51..100)
+        # Strictly monotone in pct: a wider tail reaches further down the ramp.
+        widths = [tail_loss(losses, pct=p) for p in (0.01, 0.10, 0.25, 0.50)]
+        assert widths == sorted(widths, reverse=True)
+        assert len(set(widths)) == len(widths), "tail_loss does not respond to pct"
+
+    def test_tail_loss_rejects_a_pct_outside_the_unit_interval(self):
+        """The guard that made `pct` look used must itself stay live."""
+        losses = np.arange(1.0, 101.0)
+        for bad in (0.0, 1.0, -0.1, 1.5):
+            with pytest.raises(ValueError):
+                tail_loss(losses, pct=bad)
+
 
 class TestCapitalAdequacy:
     def test_car_above_one_when_adequate(self):
