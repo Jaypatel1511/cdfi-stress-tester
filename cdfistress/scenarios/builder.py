@@ -17,15 +17,38 @@ def create_recession_scenario(
     rate_shock: float = 0.0,
     property_value_shock: float = -0.40,
     default_rate_multiplier: float = 4.0,
+    name: str = "Custom Recession",
+    severity: str = "severe",
 ) -> StressScenario:
-    """Create a configurable recession scenario (defaults: 2008-style)."""
+    """Create a configurable recession scenario (defaults: 2008-style).
+
+    ``name`` and ``severity`` are labels only; they do not affect the
+    simulation.  They exist so callers can build an arbitrarily-labelled
+    moderate or mild scenario without a second constructor.
+
+    All shocks are applied to EVERY loan in the portfolio.  A scenario's
+    ``noi_shock``, ``rate_shock``, ``property_value_shock`` and
+    ``default_rate_multiplier`` are scalars with no per-segment override, so do
+    not use ``name`` to imply that a scenario is confined to one sector or
+    geography -- it is not.
+
+    What is missing here is CALIBRATION, not mechanism.  The engine already
+    resolves each loan's sector into a per-loan baseline default rate via
+    ``SECTOR_DEFAULT_RATES``, and that per-loan array is what the simulation
+    scales, so a single run already carries sector-differentiated PDs.  Adding
+    segment-targeted stress would scale that existing array; it does not need a
+    new engine.  What does not exist is any primary source for how much harder a
+    retail book should be shocked than a multifamily one, so the per-sector
+    factors would be invented -- which is why 0.2.0 removed the sector
+    constructor rather than inventing them.  See CHANGELOG 0.2.0.
+    """
     return StressScenario(
-        name="Custom Recession",
+        name=name,
         noi_shock=noi_shock,
         rate_shock=rate_shock,
         property_value_shock=property_value_shock,
         default_rate_multiplier=default_rate_multiplier,
-        severity="severe",
+        severity=severity,
     )
 
 
@@ -58,22 +81,6 @@ def create_rate_shock_scenario(
         property_value_shock=property_value_shock,
         default_rate_multiplier=multiplier,
         severity=severity,
-    )
-
-
-def create_sector_specific_scenario(
-    sector: str,
-    noi_shock: float = -0.30,
-    property_value_shock: float = -0.35,
-) -> StressScenario:
-    """Create a scenario targeting a specific asset sector."""
-    return StressScenario(
-        name=f"{sector.title()} Sector Stress",
-        noi_shock=noi_shock,
-        rate_shock=0.005,
-        property_value_shock=property_value_shock,
-        default_rate_multiplier=2.5,
-        severity="moderate",
     )
 
 

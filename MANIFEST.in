@@ -1,0 +1,20 @@
+# The 0.2.0 sdist shipped a test suite that could not run: tests/conftest.py,
+# scripts/, examples/, .github/ and CHANGELOG.md were all absent, so 35 tests
+# errored on missing fixtures and the committed-artifact gate parametrised over
+# zero scripts and silently skipped.  Everything the shipped suite needs to run
+# from the tarball root is listed here, and CI builds the sdist and runs it.
+include LICENSE
+include README.md
+include CHANGELOG.md
+include MANIFEST.in
+include pyproject.toml
+include setup.py
+
+recursive-include tests *.py
+recursive-include scripts *.py
+recursive-include examples *.ipynb
+recursive-include .github *.yml *.yaml
+
+prune .pytest_cache
+global-exclude *.py[cod]
+global-exclude __pycache__

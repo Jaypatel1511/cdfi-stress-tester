@@ -4,13 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cdfi-stress-tester"
-version = "0.1.0"
+version = "0.2.0"
 description = "CDFI portfolio stress testing engine — Monte Carlo simulation with correlated NOI, rate, and property-value shocks"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Jay Patel", email = "thejaypatel1511@gmail.com" }]
 requires-python = ">=3.9"
-dependencies = ["numpy", "pandas"]
+# numpy only.  pandas was declared through 0.2.0 but never imported anywhere in
+# the package; it was removed rather than left as a phantom install cost.
+# Floor is a real floor: the engine uses np.random.default_rng (numpy >= 1.17).
+# Verified reproducing the committed golden figures on numpy 1.26.4 and 2.2.6.
+dependencies = ["numpy>=1.22"]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
 
 [project.urls]
 Homepage = "https://github.com/Jaypatel1511/cdfi-stress-tester"

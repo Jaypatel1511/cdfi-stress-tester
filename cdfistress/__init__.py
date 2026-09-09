@@ -17,7 +17,6 @@ from cdfistress.scenarios.builder import (
     apply_shock_to_loan,
     create_rate_shock_scenario,
     create_recession_scenario,
-    create_sector_specific_scenario,
     from_standard,
 )
 from cdfistress.montecarlo.correlations import (
@@ -44,7 +43,7 @@ from cdfistress.analysis.reports import (
     scenario_comparison_table,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "Jay Patel"
 
 __all__ = [
@@ -61,7 +60,6 @@ __all__ = [
     "from_standard",
     "create_recession_scenario",
     "create_rate_shock_scenario",
-    "create_sector_specific_scenario",
     "apply_shock_to_loan",
     # Correlations
     "build_correlation_matrix",

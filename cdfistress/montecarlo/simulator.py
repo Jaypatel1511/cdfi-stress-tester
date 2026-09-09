@@ -13,7 +13,11 @@ from cdfistress.data.schema import (
     StressResult,
     StressScenario,
 )
-from cdfistress.montecarlo.correlations import build_correlation_matrix, default_correlations
+from cdfistress.montecarlo.correlations import (
+    build_correlation_matrix,
+    default_correlations,
+    is_positive_semidefinite,
+)
 
 
 class MonteCarloEngine:
@@ -51,8 +55,58 @@ class MonteCarloEngine:
             raise ValueError("available_capital must be positive")
         self.loans = loans
         self.available_capital = available_capital
-        self._corr = correlation_matrix if correlation_matrix is not None else default_correlations()
+        self._corr = (
+            self._validated_correlation(correlation_matrix)
+            if correlation_matrix is not None
+            else default_correlations()
+        )
         self._loss_distribution: Optional[np.ndarray] = None
+
+    @staticmethod
+    def _validated_correlation(matrix: np.ndarray) -> np.ndarray:
+        """Return ``matrix`` as a validated 3x3 correlation matrix.
+
+        Through 0.2.0 this argument was accepted unchecked: a non-PSD matrix, or
+        one with a diagonal of 5 (not a correlation matrix at all), still produced
+        numbers.  ``is_positive_semidefinite`` was exported as public API and
+        never called by anything.  Both are fixed here.
+
+        This does not change the simulation math.  Every matrix that was valid
+        before is still accepted and still yields identical draws; only inputs
+        that were never correlation matrices now raise instead of silently
+        corrupting :meth:`apply_correlated_shocks`.
+
+        Raises
+        ------
+        ValueError
+            If the matrix is not a real, finite, symmetric 3x3 correlation matrix
+            with unit diagonal, off-diagonals in [-1, 1], and no negative
+            eigenvalues.
+        """
+        C = np.asarray(matrix, dtype=float)
+        if C.shape != (3, 3):
+            raise ValueError(
+                f"correlation_matrix must be 3x3 for [NOI, Rate, PropertyValue], got {C.shape}"
+            )
+        if not np.all(np.isfinite(C)):
+            raise ValueError("correlation_matrix contains NaN or infinite entries")
+        if not np.allclose(C, C.T, atol=1e-8):
+            raise ValueError("correlation_matrix must be symmetric")
+        if not np.allclose(np.diag(C), 1.0, atol=1e-8):
+            raise ValueError(
+                f"correlation_matrix must have a unit diagonal, got {np.diag(C).tolist()}. "
+                "A matrix with a non-unit diagonal is a covariance matrix, not a "
+                "correlation matrix; the engine scales by its own volatilities."
+            )
+        if np.any(np.abs(C) > 1.0 + 1e-8):
+            raise ValueError("correlation_matrix entries must lie in [-1, 1]")
+        if not is_positive_semidefinite(C):
+            raise ValueError(
+                "correlation_matrix is not positive semi-definite "
+                f"(eigenvalues {np.linalg.eigvalsh(C).tolist()}). Such a matrix does "
+                "not describe a realisable joint distribution."
+            )
+        return C
 
     def run_simulation(
         self,
@@ -93,6 +147,23 @@ class MonteCarloEngine:
             num_breaches=breaches,
             total_simulations=n_iterations,
         )
+
+    @property
+    def loss_distribution(self) -> np.ndarray:
+        """Portfolio losses from the most recent :meth:`run_simulation` call.
+
+        Returns a copy, so callers cannot mutate the engine's internal state.
+
+        Raises
+        ------
+        RuntimeError
+            If :meth:`run_simulation` has not been called yet.
+        """
+        if self._loss_distribution is None:
+            raise RuntimeError(
+                "No simulation has been run yet; call run_simulation() first."
+            )
+        return self._loss_distribution.copy()
 
     def _compute_loss_distribution(
         self,
@@ -179,16 +250,25 @@ class MonteCarloEngine:
         cov = D @ self._corr @ D
         return rng.multivariate_normal(means, cov, size=n_iterations)
 
-    def simulate_default_events(
+    def default_probabilities(
         self,
         scenario: StressScenario,
-        seed: Optional[int] = None,
     ) -> Dict[str, float]:
-        """Run a single deterministic default simulation at scenario means.
+        """Return each loan's scenario-adjusted annual default probability.
 
-        Returns per-loan default probabilities under the scenario.
+        This is a lookup, not a simulation.  Each loan's baseline sector default
+        rate (``SECTOR_DEFAULT_RATES``) is multiplied by the scenario's
+        ``default_rate_multiplier`` and clipped to [0, 1].  Nothing is drawn at
+        random, so there is no ``seed`` parameter.
+
+        These are NOT the probabilities used inside :meth:`run_simulation`.  The
+        simulation additionally scales each path's PD by ``1 + max(0, -noi_i)``
+        using that path's own drawn NOI shock, so realised simulation PDs are
+        greater than or equal to the values returned here.
+
+        Renamed in 0.2.0 from ``simulate_default_events``, which accepted a
+        ``seed`` argument that it then never used.
         """
-        rng = np.random.default_rng(seed)
         base_rates = np.array([
             SECTOR_DEFAULT_RATES.get(loan.sector, 0.035) * scenario.default_rate_multiplier
             for loan in self.loans

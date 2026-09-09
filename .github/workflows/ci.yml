@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: py${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      # Actions are pinned to commit SHAs, not tags: a tag can be moved.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          python -m pip install pytest
+
+      - name: Run test suite
+        run: python -m pytest -q
+
+      # Redundant with tests/test_committed_artifacts.py, but gives a clearly
+      # named red step when the docs drift away from what the code prints.
+      - name: Verify committed artifacts are not stale
+        run: |
+          python scripts/render_readme_block.py --check
+          python scripts/render_notebook.py --check
+
+  # The 0.2.0 sdist shipped a test suite that could not run: tests/conftest.py,
+  # scripts/, examples/ and .github/ were all absent, so 35 tests errored on
+  # missing fixtures and the committed-artifact gate parametrised over zero
+  # scripts and silently SKIPPED.  Nothing caught it because CI never built a
+  # distribution -- it only ever tested the working tree.  This job builds the
+  # distributions and runs the suite that actually ships, from the tarball root.
+  sdist:
+    name: sdist ships a runnable suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+
+      - name: Metadata is well formed
+        run: python -m twine check dist/*
+
+      - name: Run the SHIPPED test suite from the sdist root
+        run: |
+          rm -rf /tmp/sdist-check && mkdir -p /tmp/sdist-check
+          tar xzf dist/*.tar.gz -C /tmp/sdist-check
+          cd /tmp/sdist-check/cdfi_stress_tester-*
+          python -m pip install pytest
+          python -m pip install .
+          python -m pytest -q
+
+      - name: Wheel carries a LICENSE and classifiers
+        run: |
+          rm -rf /tmp/wheel-check && mkdir -p /tmp/wheel-check
+          python -m zipfile -e dist/*.whl /tmp/wheel-check
+          grep -q '^License-File:' /tmp/wheel-check/*.dist-info/METADATA
+          grep -q '^Classifier: ' /tmp/wheel-check/*.dist-info/METADATA
